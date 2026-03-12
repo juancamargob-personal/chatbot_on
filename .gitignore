@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.env
+
+# ML artifacts
+models/
+results/
+checkpoints/
+
+# Data outputs
+data/chunks/
+data/vectordb/
+data/raw/
+models/
+results/
+
+# Zip files
+*.zip
+
+# Vector DB
+*.sqlite3
+*.bin
+*.pickle
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# pytest cache
+.pytest_cache/
+

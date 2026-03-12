@@ -1,0 +1,275 @@
+{#
+    Action code snippets for OneAI config code generation.
+
+    Each block is named after the action (dots replaced with underscores).
+    They generate the Python code for a single step function body.
+    Variables available: params (dict), step (ConfigStep object).
+#}
+
+{# ========================================================================= #}
+{# OneKE Namespace Operations                                                #}
+{# ========================================================================= #}
+
+{% block oneke_namespace_create %}
+kubectl("create namespace {{ params.name }}")
+{% if params.get('labels') %}
+{% for key, val in params.labels.items() %}
+kubectl("label namespace {{ params.name }} {{ key }}={{ val }}")
+{% endfor %}
+{% endif %}
+{% if params.get('annotations') %}
+{% for key, val in params.annotations.items() %}
+kubectl("annotate namespace {{ params.name }} {{ key }}={{ val }}")
+{% endfor %}
+{% endif %}
+{% endblock %}
+
+
+{% block oneke_namespace_delete %}
+kubectl("delete namespace {{ params.name }} --ignore-not-found")
+{% endblock %}
+
+
+{% block oneke_namespace_list %}
+kubectl("get namespaces"{% if params.get('label_selector') %} + " -l {{ params.label_selector }}"{% endif %})
+{% endblock %}
+
+
+{# ========================================================================= #}
+{# OneKE App (Helm) Operations                                              #}
+{# ========================================================================= #}
+
+{% block oneke_app_deploy %}
+{% if params.get('repo_url') %}
+# Add Helm repository
+helm("repo add {{ params.chart.split('/')[0] }} {{ params.repo_url }}")
+helm("repo update")
+{% endif %}
+
+# Deploy the Helm chart
+helm_cmd = "install {{ params.release_name }} {{ params.chart }}"
+helm_cmd += " --namespace {{ params.namespace }}"
+{% if params.get('create_namespace', True) %}
+helm_cmd += " --create-namespace"
+{% endif %}
+{% if params.get('version') %}
+helm_cmd += " --version {{ params.version }}"
+{% endif %}
+{% if params.get('wait', True) %}
+helm_cmd += " --wait"
+helm_cmd += " --timeout {{ step.timeout_seconds }}s"
+{% endif %}
+{% if params.get('values') %}
+
+# Apply custom values
+import tempfile, yaml, os
+values = {{ params.values | tojson }}
+with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+    yaml.dump(values, f)
+    values_file = f.name
+helm_cmd += f" -f {values_file}"
+{% endif %}
+
+helm(helm_cmd)
+{% if params.get('values') %}
+
+# Clean up temp values file
+os.unlink(values_file)
+{% endif %}
+{% endblock %}
+
+
+{% block oneke_app_uninstall %}
+helm("uninstall {{ params.release_name }} --namespace {{ params.namespace }}"{% if params.get('keep_history') %} + " --keep-history"{% endif %})
+{% endblock %}
+
+
+{% block oneke_app_upgrade %}
+helm_cmd = "upgrade {{ params.release_name }} {{ params.chart }}"
+helm_cmd += " --namespace {{ params.namespace }}"
+{% if params.get('version') %}
+helm_cmd += " --version {{ params.version }}"
+{% endif %}
+{% if params.get('reuse_values', True) %}
+helm_cmd += " --reuse-values"
+{% endif %}
+{% if params.get('values') %}
+
+import tempfile, yaml, os
+values = {{ params.values | tojson }}
+with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+    yaml.dump(values, f)
+    values_file = f.name
+helm_cmd += f" -f {values_file}"
+{% endif %}
+
+helm(helm_cmd + " --wait")
+{% if params.get('values') %}
+os.unlink(values_file)
+{% endif %}
+{% endblock %}
+
+
+{% block oneke_app_list %}
+helm("list"{% if params.get('namespace') %} + " --namespace {{ params.namespace }}"{% endif %}{% if not params.get('namespace') %} + " --all-namespaces"{% endif %})
+{% endblock %}
+
+
+{% block oneke_app_wait_ready %}
+log("Waiting for pods to be ready (timeout: {{ params.get('timeout_seconds', 300) }}s)...", "INFO")
+kubectl("wait --for=condition=ready pod -l {{ params.label_selector }} -n {{ params.namespace }} --timeout={{ params.get('timeout_seconds', 300) }}s")
+{% endblock %}
+
+
+{% block oneke_app_get_status %}
+helm("status {{ params.release_name }} --namespace {{ params.namespace }}")
+{% endblock %}
+
+
+{# ========================================================================= #}
+{# OneKE Service Operations                                                  #}
+{# ========================================================================= #}
+
+{% block oneke_service_get_endpoint %}
+result = kubectl("get svc {{ params.service_name }} -n {{ params.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", capture=True)
+if result.stdout.strip():
+    log(f"Endpoint: {result.stdout.strip()}", "OK")
+else:
+    log("No external IP assigned yet. Service may still be provisioning.", "WARN")
+{% endblock %}
+
+
+{% block oneke_service_expose %}
+kubectl_cmd = "expose deployment {{ params.deployment_name }}"
+kubectl_cmd += " --port={{ params.port }}"
+{% if params.get('target_port') %}
+kubectl_cmd += " --target-port={{ params.target_port }}"
+{% endif %}
+kubectl_cmd += " --type={{ params.get('service_type', 'ClusterIP') }}"
+kubectl_cmd += " -n {{ params.namespace }}"
+{% if params.get('service_name') %}
+kubectl_cmd += " --name={{ params.service_name }}"
+{% endif %}
+kubectl(kubectl_cmd)
+{% endblock %}
+
+
+{% block oneke_service_list %}
+kubectl("get svc"{% if params.get('namespace') %} + " -n {{ params.namespace }}"{% endif %}{% if not params.get('namespace') %} + " --all-namespaces"{% endif %})
+{% endblock %}
+
+
+{# ========================================================================= #}
+{# OneKE Storage Operations                                                  #}
+{# ========================================================================= #}
+
+{% block oneke_storage_create_pvc %}
+import tempfile, os
+
+pvc_manifest = {
+    "apiVersion": "v1",
+    "kind": "PersistentVolumeClaim",
+    "metadata": {
+        "name": "{{ params.name }}",
+        "namespace": "{{ params.namespace }}",
+    },
+    "spec": {
+        "accessModes": ["{{ params.get('access_mode', 'ReadWriteOnce') }}"],
+        "resources": {
+            "requests": {
+                "storage": "{{ params.size }}"
+            }
+        },
+{% if params.get('storage_class') %}
+        "storageClassName": "{{ params.storage_class }}",
+{% endif %}
+    }
+}
+
+import json
+with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+    json.dump(pvc_manifest, f)
+    manifest_file = f.name
+
+kubectl(f"apply -f {manifest_file}")
+os.unlink(manifest_file)
+{% endblock %}
+
+
+{% block oneke_storage_list_pvcs %}
+kubectl("get pvc"{% if params.get('namespace') %} + " -n {{ params.namespace }}"{% endif %}{% if not params.get('namespace') %} + " --all-namespaces"{% endif %})
+{% endblock %}
+
+
+{% block oneke_storage_delete_pvc %}
+kubectl("delete pvc {{ params.name }} -n {{ params.namespace }} --ignore-not-found")
+{% endblock %}
+
+
+{# ========================================================================= #}
+{# OneKE Cluster Operations                                                  #}
+{# ========================================================================= #}
+
+{% block oneke_cluster_get_info %}
+kubectl("cluster-info")
+{% endblock %}
+
+
+{% block oneke_cluster_get_status %}
+kubectl("get nodes -o wide")
+kubectl("get pods --all-namespaces --field-selector=status.phase!=Running", check=False)
+{% endblock %}
+
+
+{% block oneke_cluster_list_nodes %}
+kubectl("get nodes -o wide"{% if params.get('role') %} + " -l node-role.kubernetes.io/{{ params.role }}"{% endif %})
+{% endblock %}
+
+
+{% block oneke_cluster_scale_nodes %}
+# NOTE: Scaling OneKE worker nodes is done through OpenNebula's OneFlow.
+# This requires pyone or the oneflow CLI.
+log("Scaling workers to {{ params.worker_count }} nodes via OneFlow...", "INFO")
+run_cmd(["oneflow", "scale", "{{ params.get('cluster_name', 'default') }}", "worker", "{{ params.worker_count }}"])
+{% endblock %}
+
+
+{# ========================================================================= #}
+{# OpenNebula VM Operations (via pyone)                                      #}
+{# ========================================================================= #}
+
+{% block one_vm_create %}
+client = get_one_client()
+template_str = """{{ params.get('template', 'NAME="vm-from-oneai"') }}"""
+vm_id = client.vm.allocate(template_str)
+log(f"VM created with ID: {vm_id}", "OK")
+{% endblock %}
+
+
+{% block one_vm_delete %}
+client = get_one_client()
+client.vm.action("terminate-hard", {{ params.vm_id }})
+log("VM {{ params.vm_id }} terminated", "OK")
+{% endblock %}
+
+
+{% block one_vm_poweroff %}
+client = get_one_client()
+client.vm.action("poweroff", {{ params.vm_id }})
+log("VM {{ params.vm_id }} powered off", "OK")
+{% endblock %}
+
+
+{% block one_vm_resume %}
+client = get_one_client()
+client.vm.action("resume", {{ params.vm_id }})
+log("VM {{ params.vm_id }} resumed", "OK")
+{% endblock %}
+
+
+{% block one_vm_list %}
+client = get_one_client()
+vm_pool = client.vmpool.info(-2, -1, -1, -1)
+for vm in vm_pool.VM:
+    log(f"VM {vm.ID}: {vm.NAME} — state {vm.STATE}", "INFO")
+{% endblock %}

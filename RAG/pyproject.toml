@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "one-ai-rag"
+version = "0.1.0"
+description = "RAG pipeline for OpenNebula documentation — scrape, chunk, embed, retrieve"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+    "lxml>=4.9",
+    "sentence-transformers>=2.2",
+    "chromadb>=0.4",
+    "langchain>=0.1",
+    "langchain-core>=0.1",
+    "langchain-community>=0.1",
+    "tiktoken>=0.5",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "rich>=13.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+openai = ["langchain-openai>=0.1", "openai>=1.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.scripts]
+one-ai-rag = "one_ai_rag.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/one_ai_rag"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
