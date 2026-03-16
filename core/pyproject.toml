@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "one-ai-core"
+version = "0.1.0"
+description = "CLI orchestrator that wires RAG + LLM + config for the OpenNebula AI assistant"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+readme = "README.md"
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies
+# Install via: pip install -e . --no-deps  (then install deps from lockfile)
+# ---------------------------------------------------------------------------
+dependencies = [
+    # LangChain stack
+    "langchain>=0.2.0",
+    "langchain-community>=0.2.0",
+    "langchain-ollama>=0.1.0",       # Ollama integration (Mistral 7B locally)
+    # Schema & validation
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    # CLI & output
+    "click>=8.1",
+    "rich>=13.0",                    # Pretty console output / spinners
+    # Sibling packages (installed with --no-deps from their own dirs)
+    # "one-ai-rag",
+    # "one-ai-config",
+]
+
+[project.optional-dependencies]
+# Full install including sibling packages (for CI / clean envs)
+full = [
+    "one-ai-rag",
+    "one-ai-config",
+]
+# Developer extras
+dev = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+# Main entry point: one-ai generate / plan / apply / eval
+one-ai = "one_ai_core.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/one_ai_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
