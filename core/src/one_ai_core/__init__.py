@@ -20,10 +20,11 @@ Typical programmatic use::
     if result.success:
         print(result.config_yaml)
         print(result.script.code)
+
+Imports are intentionally NOT done at the package level here to avoid
+circular imports (chain → config → one_ai_core package still loading).
+Import directly from the submodules as shown above.
 """
 
-from .chain import ChainResult, OneAIChain
-from .config import CoreConfig
-
-__all__ = ["OneAIChain", "ChainResult", "CoreConfig"]
 __version__ = "0.1.0"
+__all__ = ["OneAIChain", "ChainResult", "CoreConfig"]

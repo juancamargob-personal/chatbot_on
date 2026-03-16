@@ -24,7 +24,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .config import CoreConfig
 from .prompts import SYSTEM_PROMPT, USER_PROMPT, RETRY_PROMPT
 
 if TYPE_CHECKING:
@@ -89,10 +88,13 @@ class OneAIChain:
 
     def __init__(
         self,
-        config: CoreConfig | None = None,
+        config: "CoreConfig | None" = None,
         retriever=None,
     ) -> None:
-        self.cfg = config or CoreConfig()
+        if config is None:
+            from .config import CoreConfig
+            config = CoreConfig()
+        self.cfg = config
         self._retriever = retriever
         self._llm = None          # lazy-init on first call
         self._validator = None    # lazy-init on first call
@@ -103,20 +105,15 @@ class OneAIChain:
     # ------------------------------------------------------------------
 
     def _get_llm(self):
-        """Build the Ollama LangChain LLM (cached after first call)."""
-        if self._llm is None:
-            try:
-                from langchain_ollama import OllamaLLM
-            except ImportError:
-                from langchain_community.llms import Ollama as OllamaLLM  # fallback
+        """Build the LangChain LLM (cached after first call).
 
-            self._llm = OllamaLLM(
-                base_url=self.cfg.ollama_base_url,
-                model=self.cfg.ollama_model,
-                temperature=self.cfg.ollama_temperature,
-                timeout=self.cfg.ollama_timeout,
-            )
-            logger.debug("Initialised Ollama LLM: %s", self.cfg.ollama_model)
+        The actual backend (Ollama or OpenAI) is chosen by cfg.llm_backend.
+        See one_ai_core.llm.build_llm for details.
+        """
+        if self._llm is None:
+            from .llm import build_llm
+            self._llm = build_llm(self.cfg)
+            logger.debug("Initialised LLM backend: %s", self.cfg.active_model)
         return self._llm
 
     def _get_retriever(self):
