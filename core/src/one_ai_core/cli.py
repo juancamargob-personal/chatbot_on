@@ -235,7 +235,10 @@ def apply(ctx: click.Context, request: str, dry_run: bool | None,
 
     # Determine output directory
     out = Path(output_dir) if output_dir else cfg.output_dir / (
-        result.config.metadata.name if result.config else "output"
+(
+            getattr(result.config.metadata, "name", None)
+            or getattr(result.config.metadata, "description", "output")[:30].replace(" ", "-").lower()
+        ) if result.config else "output"
     )
     out.mkdir(parents=True, exist_ok=True)
 

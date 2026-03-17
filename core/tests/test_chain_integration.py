@@ -234,21 +234,24 @@ class TestChainIntegration:
 
         chain_under_test = OneAIChain(config=cfg)
 
+        # YAML must pass the real ConfigValidator. Rules from schema:
+        #   id must match ^step_\d{2,3}$  e.g. step_01
+        #   description is required on each step
+        #   on_failure must be: rollback | abort | continue | retry
         valid_yaml = """\
 metadata:
-  name: test-namespace
   description: Create a test namespace
   version: "1.0"
   risk_level: low
   tags: [test]
 steps:
-  - id: create_ns
-    name: Create namespace
+  - id: step_01
     action: oneke.namespace.create
+    description: Create the wordpress namespace on the OneKE cluster
     params:
       name: test
     depends_on: []
-    on_failure: stop
+    on_failure: abort
 validation:
   pre_checks: []
   post_checks: []
@@ -256,9 +259,9 @@ rollback:
   enabled: false
   steps: []
 """
-        # First call returns garbage; second returns valid YAML
+        # Attempt 1 returns garbage → fails validation
+        # Attempt 2 returns the valid YAML above → passes
         call_count = 0
-        original_call = chain_under_test._call_llm
 
         def patched_call(messages):
             nonlocal call_count
@@ -268,13 +271,18 @@ rollback:
             return valid_yaml
 
         chain_under_test._call_llm = patched_call
-        # Use real validator
+        # Use the real validator so schema rules are enforced
         chain_under_test._validator = ConfigValidator()
 
         result = chain_under_test.run("Create a test namespace")
 
-        assert result.attempts == 2, f"Expected 2 attempts, got {result.attempts}"
-        assert result.success is True
+        assert result.success is True, (
+            f"Chain did not succeed.\nError: {result.error}\n"
+            f"Attempts: {result.attempts}"
+        )
+        assert result.attempts == 2, (
+            f"Expected 2 attempts (1 garbage + 1 valid), got {result.attempts}."
+        )
 
 
 # ---------------------------------------------------------------------------

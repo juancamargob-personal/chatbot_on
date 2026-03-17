@@ -202,6 +202,8 @@ rollback:
 
         assert result.success is True
         assert result.attempts == 1
+        # _extract_yaml strips trailing whitespace/newlines before storing,
+        # so compare stripped versions rather than exact strings.
         assert result.config_yaml.strip() == valid_yaml.strip()
         mock_llm.invoke.assert_called_once()
 

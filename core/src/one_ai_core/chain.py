@@ -61,8 +61,15 @@ class ChainResult:
     def summary(self) -> str:
         if self.success:
             steps = len(self.config.steps) if self.config else 0
+            # ConfigMetadata fields: description, risk_level, tags, target_cluster.
+            # 'name' is not a field — use description as the identifier with a fallback.
+            label = (
+                getattr(self.config.metadata, "name", None)
+                or getattr(self.config.metadata, "description", None)
+                or self.request[:40]
+            ) if self.config else self.request[:40]
             return (
-                f"✅  Generated config '{self.config.metadata.name}' "
+                f"✅  Generated config '{label}' "
                 f"with {steps} step(s) in {self.attempts} attempt(s) "
                 f"({self.elapsed_seconds:.1f}s)"
             )
@@ -117,17 +124,44 @@ class OneAIChain:
         return self._llm
 
     def _get_retriever(self):
-        """Build the RAG retriever (cached after first call)."""
+        """Build the RAG retriever (cached after first call).
+
+        LangChainOpenNebulaRetriever is a LangChain wrapper that requires a
+        pre-built OneAIRetriever passed as its ``inner`` field.  The inner
+        retriever holds all the ChromaDB + reranker config.
+        """
         if self._retriever is None:
             try:
-                from one_ai_rag.retriever import LangChainOpenNebulaRetriever
-                self._retriever = LangChainOpenNebulaRetriever(
+                from one_ai_rag.retriever import (
+                    OneAIRetriever,
+                    LangChainOpenNebulaRetriever,
+                )
+                # The RAG settings object reads embedding_model once at import
+                # time, so env-var changes after import have no effect.
+                # Instead we construct LocalEmbedder explicitly with the model
+                # name we want, then pass it into OneAIRetriever(embedder=...).
+                # This guarantees the 768-dim all-mpnet-base-v2 model is used
+                # regardless of what the RAG package defaulted to at startup.
+                from one_ai_rag.embedder import LocalEmbedder
+                embedder = LocalEmbedder(
+                    model_name=self.cfg.rag_embedding_model,
+                )
+                inner = OneAIRetriever(
+                    embedder=embedder,
                     top_k=self.cfg.rag_top_k,
                     rerank=self.cfg.rag_rerank,
                 )
-                logger.debug("Initialised RAG retriever (top_k=%d)", self.cfg.rag_top_k)
+                self._retriever = LangChainOpenNebulaRetriever(inner=inner)
+                logger.debug(
+                    "Initialised RAG retriever (top_k=%d, rerank=%s, model=%s)",
+                    self.cfg.rag_top_k,
+                    self.cfg.rag_rerank,
+                    self.cfg.rag_embedding_model,
+                )
             except Exception as exc:
-                logger.warning("RAG retriever unavailable: %s — running without context", exc)
+                logger.warning(
+                    "RAG retriever unavailable: %s — running without context", exc
+                )
         return self._retriever
 
     def _get_validator(self):
@@ -158,7 +192,8 @@ class OneAIChain:
             return "(No documentation context available.)", []
 
         try:
-            docs = retriever.get_relevant_documents(request)
+            # invoke() is the modern LangChain API; get_relevant_documents is deprecated
+            docs = retriever.invoke(request)
             chunks = []
             parts = []
             for i, doc in enumerate(docs, 1):
@@ -219,6 +254,43 @@ class OneAIChain:
 
         return response if isinstance(response, str) else response.content
 
+    @staticmethod
+    def _extract_yaml(raw: str) -> str:
+        """
+        Extract clean YAML from an LLM response that may contain:
+        - Prose preamble  ("Here is the config:\n\n```yaml\n...")
+        - Markdown fences (```yaml / ```yml / ``` / ```bash)
+        - Trailing commentary after the closing fence
+
+        Strategy:
+          1. If a fenced block exists, extract only the content inside it.
+          2. If no fence exists, strip any leading prose lines that don't
+             look like YAML (i.e. lines that don't start with a key: pattern,
+             a list marker, or whitespace).
+          3. Return the cleaned string for the validator.
+        """
+        import re
+
+        # Try to find the first fenced code block of any type
+        fence_pattern = re.compile(
+            r"```(?:yaml|yml|bash|sh|)\s*\n(.*?)\n?```",
+            re.DOTALL | re.IGNORECASE,
+        )
+        match = fence_pattern.search(raw)
+        if match:
+            return match.group(1).strip()
+
+        # No fence found — strip leading prose lines.
+        # A "YAML line" starts with: a word followed by ':', '-', or whitespace.
+        yaml_line = re.compile(r"^(\s|\-|\w[\w\s]*:)")
+        lines = raw.splitlines()
+        for i, line in enumerate(lines):
+            if yaml_line.match(line):
+                return "\n".join(lines[i:]).strip()
+
+        # Nothing looks like YAML — return as-is and let the validator report it
+        return raw.strip()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -271,11 +343,18 @@ class OneAIChain:
                 logger.error(result.error)
                 break
 
-            # Record assistant turn for potential next retry
+            # Record the original output in history (so the LLM sees what it said)
             conversation_history.append({"role": "assistant", "content": raw_output})
 
-            # 4. Validate
-            validation = validator.validate(raw_output)
+            # 4. Strip prose/fences before validating.
+            # Mistral often wraps output in ```yaml ... ``` with a preamble sentence.
+            # The validator strips simple fences but not prose before the fence.
+            clean_output = self._extract_yaml(raw_output)
+            if clean_output != raw_output:
+                logger.debug("Stripped prose/fences from LLM output before validation")
+
+            # 5. Validate the cleaned output
+            validation = validator.validate(clean_output)
 
             if not validation.is_valid:
                 error_summary = validation.error_summary()
@@ -285,12 +364,12 @@ class OneAIChain:
                 result.error = error_summary
                 continue
 
-            # 5. Validation passed — collect warnings
+            # 6. Validation passed — collect warnings
             result.warnings = validation.warnings
             result.config = validation.config
-            result.config_yaml = raw_output
+            result.config_yaml = clean_output  # store the clean YAML, not the fenced prose
 
-            # 6. Code generation
+            # 7. Code generation
             try:
                 codegen = self._get_codegen()
                 result.script = codegen.generate(validation.config)

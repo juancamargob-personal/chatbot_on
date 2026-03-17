@@ -73,6 +73,7 @@ def _build_ollama(cfg):
     Tries ``langchain_ollama`` first (newer, dedicated package), falls back
     to ``langchain_community.llms.Ollama`` for older installs.
     """
+    # Try langchain-ollama package first (current, non-deprecated)
     try:
         from langchain_ollama import ChatOllama
         llm = ChatOllama(
@@ -80,16 +81,25 @@ def _build_ollama(cfg):
             model=cfg.ollama_model,
             temperature=cfg.ollama_temperature,
         )
-        logger.debug(
-            "Built ChatOllama: model=%s  base_url=%s",
-            cfg.ollama_model,
-            cfg.ollama_base_url,
-        )
+        logger.debug("Built ChatOllama (langchain-ollama): model=%s", cfg.ollama_model)
         return llm
     except ImportError:
         pass
 
-    # Fallback: langchain_community
+    # Fallback: langchain_community (deprecated in 0.3.1, remove when langchain-ollama is installed)
+    try:
+        from langchain_ollama import OllamaLLM  # plain LLM variant
+        llm = OllamaLLM(
+            base_url=cfg.ollama_base_url,
+            model=cfg.ollama_model,
+            temperature=cfg.ollama_temperature,
+        )
+        logger.debug("Built OllamaLLM (langchain-ollama): model=%s", cfg.ollama_model)
+        return llm
+    except (ImportError, Exception):
+        pass
+
+    # Last resort: langchain_community (will show deprecation warning)
     try:
         from langchain_community.chat_models import ChatOllama as CommunityChatOllama
         llm = CommunityChatOllama(
@@ -97,20 +107,10 @@ def _build_ollama(cfg):
             model=cfg.ollama_model,
             temperature=cfg.ollama_temperature,
         )
-        logger.debug("Built community ChatOllama (fallback)")
-        return llm
-    except ImportError:
-        pass
-
-    # Last resort: plain LLM (non-chat)
-    try:
-        from langchain_community.llms import Ollama
-        llm = Ollama(
-            base_url=cfg.ollama_base_url,
-            model=cfg.ollama_model,
-            temperature=cfg.ollama_temperature,
+        logger.warning(
+            "Using deprecated langchain_community.ChatOllama. "
+            "Run: pip install -U langchain-ollama"
         )
-        logger.debug("Built plain Ollama LLM (last resort fallback)")
         return llm
     except ImportError as exc:
         raise ImportError(

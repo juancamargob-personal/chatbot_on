@@ -72,6 +72,13 @@ MAX_RETRIES: int = _env_int("MAX_RETRIES", 3)
 
 RAG_TOP_K: int   = _env_int("RAG_TOP_K",   5)
 RAG_RERANK: bool = _env_bool("RAG_RERANK", True)
+RAG_EMBEDDING_MODEL: str = _env(
+    "RAG_EMBEDDING_MODEL",
+    # Must match whatever model was used to build the ChromaDB collection.
+    # The handoff doc confirms all-mpnet-base-v2 (768 dims) is the correct model.
+    # Override with ONEAI_CORE_RAG_EMBEDDING_MODEL if you used a different one.
+    "sentence-transformers/all-mpnet-base-v2",
+)
 
 # ---------------------------------------------------------------------------
 # Output directory
@@ -140,8 +147,9 @@ class CoreConfig:
     max_retries: int = field(default_factory=lambda: MAX_RETRIES)
 
     # RAG
-    rag_top_k: int   = field(default_factory=lambda: RAG_TOP_K)
-    rag_rerank: bool = field(default_factory=lambda: RAG_RERANK)
+    rag_top_k: int            = field(default_factory=lambda: RAG_TOP_K)
+    rag_rerank: bool          = field(default_factory=lambda: RAG_RERANK)
+    rag_embedding_model: str  = field(default_factory=lambda: RAG_EMBEDDING_MODEL)
 
     # Paths
     output_dir: Path = field(default_factory=lambda: OUTPUT_DIR)
