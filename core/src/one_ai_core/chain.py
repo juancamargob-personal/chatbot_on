@@ -6,7 +6,7 @@ The core LangChain orchestration chain.
 Flow
 ----
 1. Retrieve relevant OpenNebula doc chunks from ChromaDB via one-ai-rag.
-2. Build the prompt (system + RAG context + user request).
+2. Build the prompt (system + few-shot examples + RAG context + user request).
 3. Call the local Ollama LLM.
 4. Validate the raw output with one-ai-config's ConfigValidator.
 5. If validation fails, feed the error summary back to the LLM and retry
@@ -20,14 +20,20 @@ script, and metadata about retries / warnings.
 from __future__ import annotations
 
 import logging
+import re
 import time
+import yaml
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .prompts import SYSTEM_PROMPT, USER_PROMPT, RETRY_PROMPT
+from .prompts import (
+    SYSTEM_PROMPT, USER_PROMPT, RETRY_PROMPT,
+    FEW_SHOT_USER, FEW_SHOT_ASSISTANT,
+    FEW_SHOT_USER_2, FEW_SHOT_ASSISTANT_2,
+    FEW_SHOT_USER_3, FEW_SHOT_ASSISTANT_3,
+)
 
 if TYPE_CHECKING:
-    # Lazy imports so the module loads even if sibling packages aren't present
     from one_ai_config.schema.base import OneAIConfig
     from one_ai_config.codegen.generator import GeneratedScript
 
@@ -61,8 +67,6 @@ class ChainResult:
     def summary(self) -> str:
         if self.success:
             steps = len(self.config.steps) if self.config else 0
-            # ConfigMetadata fields: description, risk_level, tags, target_cluster.
-            # 'name' is not a field — use description as the identifier with a fallback.
             label = (
                 getattr(self.config.metadata, "name", None)
                 or getattr(self.config.metadata, "description", None)
@@ -103,20 +107,15 @@ class OneAIChain:
             config = CoreConfig()
         self.cfg = config
         self._retriever = retriever
-        self._llm = None          # lazy-init on first call
-        self._validator = None    # lazy-init on first call
-        self._codegen = None      # lazy-init on first call
+        self._llm = None
+        self._validator = None
+        self._codegen = None
 
     # ------------------------------------------------------------------
     # Lazy initialisation helpers
     # ------------------------------------------------------------------
 
     def _get_llm(self):
-        """Build the LangChain LLM (cached after first call).
-
-        The actual backend (Ollama or OpenAI) is chosen by cfg.llm_backend.
-        See one_ai_core.llm.build_llm for details.
-        """
         if self._llm is None:
             from .llm import build_llm
             self._llm = build_llm(self.cfg)
@@ -124,24 +123,12 @@ class OneAIChain:
         return self._llm
 
     def _get_retriever(self):
-        """Build the RAG retriever (cached after first call).
-
-        LangChainOpenNebulaRetriever is a LangChain wrapper that requires a
-        pre-built OneAIRetriever passed as its ``inner`` field.  The inner
-        retriever holds all the ChromaDB + reranker config.
-        """
         if self._retriever is None:
             try:
                 from one_ai_rag.retriever import (
                     OneAIRetriever,
                     LangChainOpenNebulaRetriever,
                 )
-                # The RAG settings object reads embedding_model once at import
-                # time, so env-var changes after import have no effect.
-                # Instead we construct LocalEmbedder explicitly with the model
-                # name we want, then pass it into OneAIRetriever(embedder=...).
-                # This guarantees the 768-dim all-mpnet-base-v2 model is used
-                # regardless of what the RAG package defaulted to at startup.
                 from one_ai_rag.embedder import LocalEmbedder
                 embedder = LocalEmbedder(
                     model_name=self.cfg.rag_embedding_model,
@@ -181,18 +168,11 @@ class OneAIChain:
     # ------------------------------------------------------------------
 
     def _retrieve_context(self, request: str) -> tuple[str, list[dict]]:
-        """
-        Retrieve RAG chunks for ``request``.
-
-        Returns ``(formatted_context_string, raw_chunks_list)``.
-        Falls back to empty string if retriever is unavailable.
-        """
         retriever = self._get_retriever()
         if retriever is None:
             return "(No documentation context available.)", []
 
         try:
-            # invoke() is the modern LangChain API; get_relevant_documents is deprecated
             docs = retriever.invoke(request)
             chunks = []
             parts = []
@@ -220,33 +200,42 @@ class OneAIChain:
         """
         Build the message list for the LLM.
 
-        ``conversation_history`` holds previous (assistant, user) pairs for
-        the retry loop.
+        Structure:
+        1. System message (short — role + rules + actions list)
+        2. Few-shot example 1 (user request -> assistant YAML response)
+        3. Few-shot example 2 (multi-step with rollback)
+        4. Replay of retry conversation history (if retrying)
+        5. Real user request with RAG context
         """
         from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT.format(rag_context=rag_context)),
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=FEW_SHOT_USER),
+            AIMessage(content=FEW_SHOT_ASSISTANT),
+            HumanMessage(content=FEW_SHOT_USER_2),
+            AIMessage(content=FEW_SHOT_ASSISTANT_2),
+            HumanMessage(content=FEW_SHOT_USER_3),
+            AIMessage(content=FEW_SHOT_ASSISTANT_3),
         ]
-        # Replay previous turns (for retry: alternating assistant/user)
+
         for turn in conversation_history:
             if turn["role"] == "assistant":
                 messages.append(AIMessage(content=turn["content"]))
             else:
                 messages.append(HumanMessage(content=turn["content"]))
 
-        messages.append(HumanMessage(content=USER_PROMPT.format(user_request=request)))
+        messages.append(HumanMessage(content=USER_PROMPT.format(
+            rag_context=rag_context,
+            user_request=request,
+        )))
         return messages
 
     def _call_llm(self, messages: list) -> str:
-        """Invoke the LLM and return the raw string response."""
         llm = self._get_llm()
-        # LangChain's invoke() accepts a list of messages for chat models;
-        # for plain LLMs we join them into a single string.
         try:
             response = llm.invoke(messages)
         except Exception:
-            # Some older integrations need a plain string
             prompt_text = "\n\n".join(
                 (m.content if hasattr(m, "content") else str(m)) for m in messages
             )
@@ -254,42 +243,107 @@ class OneAIChain:
 
         return response if isinstance(response, str) else response.content
 
+    # ------------------------------------------------------------------
+    # YAML extraction and patching
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _extract_yaml(raw: str) -> str:
         """
-        Extract clean YAML from an LLM response that may contain:
-        - Prose preamble  ("Here is the config:\n\n```yaml\n...")
-        - Markdown fences (```yaml / ```yml / ``` / ```bash)
-        - Trailing commentary after the closing fence
+        Extract clean YAML from an LLM response.
 
-        Strategy:
-          1. If a fenced block exists, extract only the content inside it.
-          2. If no fence exists, strip any leading prose lines that don't
-             look like YAML (i.e. lines that don't start with a key: pattern,
-             a list marker, or whitespace).
-          3. Return the cleaned string for the validator.
+        Aggressively strips markdown fences, prose preambles, and trailing text.
         """
-        import re
+        raw = raw.strip()
 
-        # Try to find the first fenced code block of any type
-        fence_pattern = re.compile(
-            r"```(?:yaml|yml|bash|sh|)\s*\n(.*?)\n?```",
-            re.DOTALL | re.IGNORECASE,
-        )
-        match = fence_pattern.search(raw)
-        if match:
-            return match.group(1).strip()
+        # Step 1: Strip markdown fences (aggressive — handles all edge cases)
+        if "```" in raw:
+            # Split on ``` and find the block that looks like YAML
+            parts = raw.split("```")
+            # parts[0] = before first fence, parts[1] = first block content,
+            # parts[2] = after first close, etc.
+            # Try each odd-indexed part (content inside fences)
+            for i in range(1, len(parts), 2):
+                content = parts[i].strip()
+                # Remove language tag if present (yaml, yml, etc.)
+                if content and content.split("\n")[0].strip().isalpha():
+                    content = "\n".join(content.split("\n")[1:]).strip()
+                if content:
+                    raw = content
+                    break
 
-        # No fence found — strip leading prose lines.
-        # A "YAML line" starts with: a word followed by ':', '-', or whitespace.
-        yaml_line = re.compile(r"^(\s|\-|\w[\w\s]*:)")
+        # Step 2: Find first line starting with a known schema key
+        schema_starts = ("metadata:", "steps:", "error:", "version:",
+                         "validation:", "rollback:")
         lines = raw.splitlines()
         for i, line in enumerate(lines):
-            if yaml_line.match(line):
-                return "\n".join(lines[i:]).strip()
+            if line.strip().startswith(schema_starts):
+                raw = "\n".join(lines[i:]).strip()
+                break
 
-        # Nothing looks like YAML — return as-is and let the validator report it
-        return raw.strip()
+        # Step 3: Remove any remaining fences or trailing prose
+        if "```" in raw:
+            raw = raw[:raw.index("```")].strip()
+
+        # Step 4: Remove YAML document separators (---) that cause
+        # "expected a single document" errors. Keep only first document.
+        cleaned_lines = []
+        for line in raw.splitlines():
+            if line.strip() == "---":
+                break
+            cleaned_lines.append(line)
+        raw = "\n".join(cleaned_lines).strip()
+
+        return raw
+
+    @staticmethod
+    def _patch_yaml(text: str, request: str) -> str:
+        """
+        Auto-fix common Mistral 7B omissions before validation.
+
+        Mistral consistently drops 'description' from metadata and steps.
+        Rather than waste retries on this, we patch it in from context.
+        """
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return text  # unparseable — let the validator report it
+
+        if not isinstance(data, dict):
+            return text
+
+        changed = False
+
+        # Patch metadata.description
+        if "metadata" in data and isinstance(data["metadata"], dict):
+            if "description" not in data["metadata"]:
+                data["metadata"]["description"] = request[:100]
+                changed = True
+        elif "metadata" in data and isinstance(data["metadata"], str):
+            # Mistral sometimes outputs metadata: "some string" instead of a dict
+            data["metadata"] = {"description": data["metadata"] or request[:100]}
+            changed = True
+        elif "metadata" in data and data["metadata"] is None:
+            data["metadata"] = {"description": request[:100]}
+            changed = True
+        elif "metadata" not in data and "steps" in data:
+            data["metadata"] = {"description": request[:100]}
+            changed = True
+
+        # Patch step descriptions
+        if "steps" in data and isinstance(data["steps"], list):
+            for step in data["steps"]:
+                if isinstance(step, dict) and "description" not in step:
+                    action = step.get("action", "execute step")
+                    params = step.get("params", {})
+                    name = params.get("name", "") if isinstance(params, dict) else ""
+                    step["description"] = f"{action} {name}".strip()
+                    changed = True
+
+        if changed:
+            logger.debug("Auto-patched missing fields in LLM output")
+            return yaml.dump(data, default_flow_style=False, sort_keys=False)
+        return text
 
     # ------------------------------------------------------------------
     # Public API
@@ -324,13 +378,11 @@ class OneAIChain:
             result.attempts = attempt
             logger.info("Attempt %d / %d", attempt, self.cfg.max_retries)
 
-            # 2. Build messages (first attempt = initial prompt; subsequent = retry prompt)
+            # 2. Build messages
             if attempt == 1:
                 messages = self._build_messages(request, rag_context, [])
             else:
-                # Append retry instruction with validation errors to history
-                last_error = conversation_history[-1]["content"]  # set below on failure
-                retry_msg = RETRY_PROMPT.format(error_summary=last_error)
+                retry_msg = RETRY_PROMPT.format(error_summary=result.error)
                 conversation_history.append({"role": "user", "content": retry_msg})
                 messages = self._build_messages(request, rag_context, conversation_history)
 
@@ -343,33 +395,30 @@ class OneAIChain:
                 logger.error(result.error)
                 break
 
-            # Record the original output in history (so the LLM sees what it said)
             conversation_history.append({"role": "assistant", "content": raw_output})
 
-            # 4. Strip prose/fences before validating.
-            # Mistral often wraps output in ```yaml ... ``` with a preamble sentence.
-            # The validator strips simple fences but not prose before the fence.
+            # 4. Extract, patch, and validate
             clean_output = self._extract_yaml(raw_output)
             if clean_output != raw_output:
                 logger.debug("Stripped prose/fences from LLM output before validation")
 
-            # 5. Validate the cleaned output
+            # Auto-fix common Mistral 7B omissions (missing description, etc.)
+            clean_output = self._patch_yaml(clean_output, request)
+
             validation = validator.validate(clean_output)
 
             if not validation.is_valid:
                 error_summary = validation.error_summary()
                 logger.warning("Validation failed (attempt %d):\n%s", attempt, error_summary)
-                # Store error for the next retry prompt
-                conversation_history.append({"role": "user", "content": error_summary})
                 result.error = error_summary
                 continue
 
-            # 6. Validation passed — collect warnings
+            # 5. Validation passed
             result.warnings = validation.warnings
             result.config = validation.config
-            result.config_yaml = clean_output  # store the clean YAML, not the fenced prose
+            result.config_yaml = clean_output
 
-            # 7. Code generation
+            # 6. Code generation
             try:
                 codegen = self._get_codegen()
                 result.script = codegen.generate(validation.config)

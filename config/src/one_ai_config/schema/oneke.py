@@ -188,6 +188,64 @@ class StorageDeletePVCParams(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# OpenNebula VM Actions
+# ---------------------------------------------------------------------------
+
+class VmCreateParams(BaseModel):
+    """Params for one.vm.create"""
+    template_id: int = Field(description="OpenNebula VM template ID")
+    name: str = Field(description="Name for the new VM instance")
+    cpu: Optional[float] = Field(default=None, ge=0.1, description="Number of CPUs")
+    memory_mb: Optional[int] = Field(default=None, ge=128, description="Memory in MB")
+    hold: bool = Field(default=False, description="Create VM on hold instead of pending")
+    extra_template: Optional[str] = Field(
+        default=None,
+        description="Extra template attributes to merge (attribute=value format)",
+    )
+
+
+class VmDeleteParams(BaseModel):
+    """Params for one.vm.delete"""
+    vm_id: int = Field(description="OpenNebula VM ID to delete")
+
+
+class VmPoweroffParams(BaseModel):
+    """Params for one.vm.poweroff"""
+    vm_id: int = Field(description="OpenNebula VM ID to power off")
+    hard: bool = Field(default=False, description="Hard poweroff (skip ACPI signal)")
+
+
+class VmResumeParams(BaseModel):
+    """Params for one.vm.resume"""
+    vm_id: int = Field(description="OpenNebula VM ID to resume")
+
+
+class VmListParams(BaseModel):
+    """Params for one.vm.list"""
+    filter_flag: Optional[int] = Field(
+        default=None,
+        description="Filter: -2=all, -1=mine, >=0=specific user ID",
+    )
+
+
+class VmResizeParams(BaseModel):
+    """Params for one.vm.resize"""
+    vm_id: int = Field(description="OpenNebula VM ID to resize")
+    cpu: Optional[float] = Field(default=None, ge=0.1)
+    memory_mb: Optional[int] = Field(default=None, ge=128)
+    enforce: bool = Field(
+        default=False,
+        description="If true, enforce capacity checks",
+    )
+
+
+class VmSnapshotCreateParams(BaseModel):
+    """Params for one.vm.snapshot_create"""
+    vm_id: int = Field(description="OpenNebula VM ID")
+    snapshot_name: str = Field(default="snapshot", description="Name for the snapshot")
+
+
+# ---------------------------------------------------------------------------
 # Action Registry
 # ---------------------------------------------------------------------------
 
@@ -220,6 +278,15 @@ ACTION_PARAM_REGISTRY: dict[str, type[BaseModel]] = {
     "oneke.storage.create_pvc": StorageCreatePVCParams,
     "oneke.storage.list_pvcs": StorageListPVCsParams,
     "oneke.storage.delete_pvc": StorageDeletePVCParams,
+
+    # OpenNebula VMs
+    "one.vm.create": VmCreateParams,
+    "one.vm.delete": VmDeleteParams,
+    "one.vm.poweroff": VmPoweroffParams,
+    "one.vm.resume": VmResumeParams,
+    "one.vm.list": VmListParams,
+    "one.vm.resize": VmResizeParams,
+    "one.vm.snapshot_create": VmSnapshotCreateParams,
 }
 
 

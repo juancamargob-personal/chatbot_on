@@ -38,3 +38,5 @@ Thumbs.db
 # pytest cache
 .pytest_cache/
 
+#Project Handoff
+PROJECT_HANDOFF.md

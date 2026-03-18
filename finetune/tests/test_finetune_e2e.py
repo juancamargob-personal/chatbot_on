@@ -211,9 +211,9 @@ class TestDataQualityCleaner:
 
     def test_removes_exact_duplicates(self):
         data = [
-            {"instruction": "Deploy WordPress", "output": "version: '1.0'\nsteps: []"},
-            {"instruction": "Deploy WordPress", "output": "version: '1.0'\nsteps: []"},
-            {"instruction": "Deploy Redis", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy WordPress on cluster", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy WordPress on cluster", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy Redis on cluster", "output": "version: '1.0'\nsteps: []"},
         ]
         cleaner = DataQualityCleaner()
         clean = cleaner.clean(data)
@@ -244,8 +244,8 @@ class TestDataQualityCleaner:
     def test_removes_empty_fields(self):
         data = [
             {"instruction": "", "output": "version: '1.0'"},
-            {"instruction": "Deploy app", "output": ""},
-            {"instruction": "Deploy app", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy the application now", "output": ""},
+            {"instruction": "Deploy the application now", "output": "version: '1.0'\nsteps: []"},
         ]
         cleaner = DataQualityCleaner()
         clean = cleaner.clean(data)
@@ -254,8 +254,8 @@ class TestDataQualityCleaner:
 
     def test_removes_invalid_yaml(self):
         data = [
-            {"instruction": "Deploy app", "output": "version: '1.0'\nsteps: []"},
-            {"instruction": "Bad output", "output": "not: valid: yaml: [[["},
+            {"instruction": "Deploy the application now", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Do something bad here", "output": "not: valid: yaml: [[["},
         ]
         cleaner = DataQualityCleaner()
         clean = cleaner.clean(data)
@@ -264,8 +264,8 @@ class TestDataQualityCleaner:
 
     def test_report_summary(self):
         data = [
-            {"instruction": "Deploy app", "output": "version: '1.0'\nsteps: []"},
-            {"instruction": "Deploy app", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy the application now", "output": "version: '1.0'\nsteps: []"},
+            {"instruction": "Deploy the application now", "output": "version: '1.0'\nsteps: []"},
         ]
         cleaner = DataQualityCleaner()
         cleaner.clean(data)
@@ -298,7 +298,7 @@ class TestSchemaEvaluator:
 
         evaluator = SchemaEvaluator()
         examples = [{
-            "instruction": "Deploy WordPress",
+            "instruction": "Deploy WordPress on cluster",
             "output": (
                 'version: "1.0"\n'
                 'metadata:\n'
