@@ -28,9 +28,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +75,7 @@ class QLoRAConfig:
     logging_steps: int = 10
     save_steps: int = 100
     eval_steps: int = 100
-    use_wandb: bool = True
+    use_wandb: bool = False
     wandb_project: str = "one-ai-finetune"
 
     # Dataset
@@ -236,14 +235,15 @@ def train(config: QLoRAConfig) -> str:
         os.environ.setdefault("WANDB_PROJECT", config.wandb_project)
 
     # Training arguments
-    training_args = TrainingArguments(
+    # Training arguments (trl 0.29: SFTConfig replaces TrainingArguments)
+    training_args = SFTConfig(
         output_dir=config.output_dir,
         num_train_epochs=config.epochs,
         per_device_train_batch_size=config.batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
-        warmup_ratio=config.warmup_ratio,
+        warmup_steps=2,
         lr_scheduler_type=config.lr_scheduler_type,
         max_grad_norm=config.max_grad_norm,
         fp16=config.fp16,
@@ -257,19 +257,19 @@ def train(config: QLoRAConfig) -> str:
         report_to=report_to,
         run_name=f"oneke-qlora-r{config.lora_r}-lr{config.learning_rate}",
         optim="paged_adamw_32bit",
-        group_by_length=True,
+        # SFT-specific (moved here in trl 0.29)
+        dataset_text_field="text",
+        max_length=config.max_seq_length,
+        packing=False,
     )
 
     # Trainer
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        dataset_text_field="text",
-        max_seq_length=config.max_seq_length,
-        packing=False,
     )
 
     # Train

@@ -1,0 +1,8 @@
+{
+  "format": "mistral",
+  "total_examples": 308,
+  "train_examples": 278,
+  "eval_examples": 30,
+  "skipped": 0,
+  "eval_split": 0.1
+}

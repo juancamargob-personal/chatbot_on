@@ -1,0 +1,15 @@
+{
+  "total_generated": 154,
+  "schema_valid": 154,
+  "schema_invalid": 1,
+  "duplicates_removed": 0,
+  "api_calls": 12,
+  "api_errors": 3,
+  "api_cost_estimate_usd": 0.04332989999999999,
+  "invalid_examples": [
+    {
+      "instruction": "Let's expose a service for my deployment in OneKE.",
+      "error": "The configuration has the following errors:\n  1. [validation → pre_checks → 0 → type] Input should be 'cluster_reachable', 'namespace_available', 'namespace_exists', 'pods_running', 'service_available"
+    }
+  ]
+}

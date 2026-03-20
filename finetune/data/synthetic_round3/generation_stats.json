@@ -1,0 +1,15 @@
+{
+  "total_generated": 64,
+  "schema_valid": 64,
+  "schema_invalid": 1,
+  "duplicates_removed": 0,
+  "api_calls": 10,
+  "api_errors": 0,
+  "api_cost_estimate_usd": 0.014468099999999998,
+  "invalid_examples": [
+    {
+      "instruction": "Create a VM, install a web server, and verify its status",
+      "error": "The configuration has the following errors:\n  1. [steps → 4 → action] Value error, Unsupported action 'one.vm.get_status'. Supported actions: ['one.vm.create', 'one.vm.delete', 'one.vm.list', 'one.vm."
+    }
+  ]
+}

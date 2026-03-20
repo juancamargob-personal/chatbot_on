@@ -1,0 +1,77 @@
+[
+  {
+    "id": "ns_01",
+    "cat": "namespace",
+    "passed": true
+  },
+  {
+    "id": "ns_02",
+    "cat": "namespace",
+    "passed": true
+  },
+  {
+    "id": "app_01",
+    "cat": "app",
+    "passed": false
+  },
+  {
+    "id": "app_02",
+    "cat": "app",
+    "passed": true
+  },
+  {
+    "id": "app_03",
+    "cat": "app",
+    "passed": true
+  },
+  {
+    "id": "vm_01",
+    "cat": "vm",
+    "passed": true
+  },
+  {
+    "id": "vm_02",
+    "cat": "vm",
+    "passed": true
+  },
+  {
+    "id": "vm_03",
+    "cat": "vm",
+    "passed": true
+  },
+  {
+    "id": "multi_01",
+    "cat": "multi",
+    "passed": true
+  },
+  {
+    "id": "multi_02",
+    "cat": "multi",
+    "passed": true
+  },
+  {
+    "id": "complex_01",
+    "cat": "complex",
+    "passed": true
+  },
+  {
+    "id": "neg_01",
+    "cat": "negative",
+    "passed": true
+  },
+  {
+    "id": "neg_02",
+    "cat": "negative",
+    "passed": true
+  },
+  {
+    "id": "cluster_01",
+    "cat": "cluster",
+    "passed": true
+  },
+  {
+    "id": "cluster_02",
+    "cat": "cluster",
+    "passed": true
+  }
+]

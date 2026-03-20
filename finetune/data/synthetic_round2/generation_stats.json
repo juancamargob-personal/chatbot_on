@@ -1,0 +1,10 @@
+{
+  "total_generated": 98,
+  "schema_valid": 98,
+  "schema_invalid": 0,
+  "duplicates_removed": 0,
+  "api_calls": 10,
+  "api_errors": 0,
+  "api_cost_estimate_usd": 0.0196407,
+  "invalid_examples": []
+}
