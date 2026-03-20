@@ -16,6 +16,20 @@ ollama  — Local Ollama server (default).  Free, private, runs on your NUC.
 openai  — OpenAI Chat API (GPT-4o by default).  Used for comparison / eval.
           Requires: pip install langchain-openai
           Key set via: export OPENAI_API_KEY=sk-...
+
+Fine-tuned mode
+---------------
+When ``cfg.is_finetuned`` is True, the Ollama backend uses ``OllamaLLM``
+(which hits /api/generate) instead of ``ChatOllama`` (which hits /api/chat).
+
+This is critical because the Modelfile TEMPLATE containing the ``<<SYS>>``
+block only gets applied by the /api/generate endpoint.  The /api/chat
+endpoint formats messages its own way, bypassing the TEMPLATE and causing
+the fine-tuned model to fall back to base Mistral behavior.
+
+OllamaLLM.invoke() accepts a plain string and returns a plain string.
+ChatOllama.invoke() accepts messages and returns an AIMessage.
+The chain handles both cases.
 """
 
 from __future__ import annotations
@@ -29,9 +43,8 @@ def build_llm(cfg):
     """
     Build and return a LangChain LLM for the given config.
 
-    The returned object always supports ``.invoke(messages)`` where
-    ``messages`` is a list of LangChain message objects (SystemMessage,
-    HumanMessage, AIMessage).
+    For base models:  returns ChatOllama (uses /api/chat).
+    For fine-tuned:   returns OllamaLLM  (uses /api/generate, applies TEMPLATE).
 
     Parameters
     ----------
@@ -41,13 +54,6 @@ def build_llm(cfg):
     Returns
     -------
     A LangChain BaseChatModel or BaseLLM instance.
-
-    Raises
-    ------
-    ValueError
-        If ``cfg.llm_backend`` is not one of the supported values.
-    ImportError
-        If the required package for the chosen backend is not installed.
     """
     backend = cfg.llm_backend.lower().strip()
 
@@ -70,10 +76,56 @@ def _build_ollama(cfg):
     """
     Build a LangChain Ollama LLM.
 
-    Tries ``langchain_ollama`` first (newer, dedicated package), falls back
-    to ``langchain_community.llms.Ollama`` for older installs.
+    Fine-tuned models use OllamaLLM (/api/generate) so the Modelfile
+    TEMPLATE with <<SYS>> is applied correctly.
+
+    Base models use ChatOllama (/api/chat) for structured message handling
+    with few-shot examples.
     """
-    # Try langchain-ollama package first (current, non-deprecated)
+    if cfg.is_finetuned:
+        return _build_ollama_generate(cfg)
+    else:
+        return _build_ollama_chat(cfg)
+
+
+def _build_ollama_generate(cfg):
+    """
+    Build OllamaLLM for fine-tuned models.
+
+    Uses /api/generate endpoint which applies the Modelfile TEMPLATE.
+    This ensures the <<SYS>> system prompt block is formatted correctly,
+    matching the training format.
+
+    OllamaLLM.invoke(prompt_string) -> string
+    """
+    try:
+        from langchain_ollama import OllamaLLM
+        llm = OllamaLLM(
+            base_url=cfg.ollama_base_url,
+            model=cfg.ollama_model,
+            temperature=cfg.ollama_temperature,
+        )
+        logger.debug(
+            "Built OllamaLLM (generate endpoint) for fine-tuned model: %s",
+            cfg.ollama_model,
+        )
+        return llm
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import langchain_ollama.OllamaLLM.\n"
+            "Run: pip install langchain-ollama"
+        ) from exc
+
+
+def _build_ollama_chat(cfg):
+    """
+    Build ChatOllama for base models.
+
+    Uses /api/chat endpoint for structured message handling (SystemMessage,
+    HumanMessage, AIMessage) needed for few-shot prompting.
+
+    ChatOllama.invoke(messages) -> AIMessage
+    """
     try:
         from langchain_ollama import ChatOllama
         llm = ChatOllama(
@@ -81,22 +133,9 @@ def _build_ollama(cfg):
             model=cfg.ollama_model,
             temperature=cfg.ollama_temperature,
         )
-        logger.debug("Built ChatOllama (langchain-ollama): model=%s", cfg.ollama_model)
+        logger.debug("Built ChatOllama (chat endpoint): model=%s", cfg.ollama_model)
         return llm
     except ImportError:
-        pass
-
-    # Fallback: langchain_community (deprecated in 0.3.1, remove when langchain-ollama is installed)
-    try:
-        from langchain_ollama import OllamaLLM  # plain LLM variant
-        llm = OllamaLLM(
-            base_url=cfg.ollama_base_url,
-            model=cfg.ollama_model,
-            temperature=cfg.ollama_temperature,
-        )
-        logger.debug("Built OllamaLLM (langchain-ollama): model=%s", cfg.ollama_model)
-        return llm
-    except (ImportError, Exception):
         pass
 
     # Last resort: langchain_community (will show deprecation warning)

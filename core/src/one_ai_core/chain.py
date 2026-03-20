@@ -15,6 +15,20 @@ Flow
 
 Returns a ``ChainResult`` dataclass with the validated config, generated
 script, and metadata about retries / warnings.
+
+Fine-tuned mode
+---------------
+When ``config.is_finetuned`` is True, the chain builds a raw prompt string
+(not LangChain messages) and sends it to OllamaLLM which uses the
+/api/generate endpoint.  This is necessary because:
+
+- The fine-tuned model requires the exact ``<<SYS>>`` prompt format used
+  during QLoRA training.
+- The Modelfile TEMPLATE applies this format, but only via /api/generate.
+- ChatOllama uses /api/chat which formats messages differently, causing
+  the model to fall back to base Mistral behavior.
+
+The extract -> patch -> validate pipeline is identical for both modes.
 """
 
 from __future__ import annotations
@@ -24,7 +38,7 @@ import re
 import time
 import yaml
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 from .prompts import (
     SYSTEM_PROMPT, USER_PROMPT, RETRY_PROMPT,
@@ -38,6 +52,32 @@ if TYPE_CHECKING:
     from one_ai_config.codegen.generator import GeneratedScript
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# System prompt used during fine-tuning (must match exactly)
+# ---------------------------------------------------------------------------
+
+FINETUNED_SYSTEM_PROMPT = """You are an OpenNebula infrastructure configuration assistant.
+Given a natural language request, you produce a YAML configuration file that
+describes the steps needed to fulfill the request on an OpenNebula / OneKE cluster.
+
+Your output must be valid YAML following the OneAI configuration schema.
+If the request is impossible or unsupported, produce an error configuration
+explaining why and suggesting alternatives.
+
+Always include:
+- Proper metadata with description, risk level, and tags
+- Ordered steps with dependencies
+- Pre-checks and post-checks in the validation section
+- Rollback steps for operations that modify the cluster"""
+
+# Retry prompt for fine-tuned model
+FINETUNED_RETRY_PROMPT = """Your previous output failed validation:
+
+{error_summary}
+
+Please produce a corrected YAML configuration. Fix the errors above and ensure all field names, step IDs, and action names match the OneAI schema exactly."""
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +208,9 @@ class OneAIChain:
     # ------------------------------------------------------------------
 
     def _retrieve_context(self, request: str) -> tuple[str, list[dict]]:
+        if not self.cfg.rag_enabled:
+            logger.debug("RAG disabled by config")
+            return "(No documentation context available.)", []
         retriever = self._get_retriever()
         if retriever is None:
             return "(No documentation context available.)", []
@@ -196,17 +239,23 @@ class OneAIChain:
         request: str,
         rag_context: str,
         conversation_history: list[dict],
-    ) -> list[dict]:
+    ) -> Union[list, str]:
         """
-        Build the message list for the LLM.
+        Build the prompt for the LLM.
 
-        Structure:
-        1. System message (short — role + rules + actions list)
-        2. Few-shot example 1 (user request -> assistant YAML response)
-        3. Few-shot example 2 (multi-step with rollback)
-        4. Replay of retry conversation history (if retrying)
-        5. Real user request with RAG context
+        Returns
+        -------
+        list
+            LangChain message objects for base model (ChatOllama, /api/chat).
+        str
+            Raw prompt string for fine-tuned model (OllamaLLM, /api/generate).
         """
+        if self.cfg.is_finetuned:
+            return self._build_prompt_finetuned(
+                request, rag_context, conversation_history
+            )
+
+        # --- Base model: few-shot message list for ChatOllama ---
         from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
         messages = [
@@ -231,13 +280,83 @@ class OneAIChain:
         )))
         return messages
 
-    def _call_llm(self, messages: list) -> str:
+    def _build_prompt_finetuned(
+        self,
+        request: str,
+        rag_context: str,
+        conversation_history: list[dict],
+    ) -> str:
+        """
+        Build a raw prompt string for the fine-tuned model.
+
+        This is sent to OllamaLLM which hits /api/generate.  Ollama then
+        applies the Modelfile TEMPLATE, which wraps the system and user
+        content in the ``<<SYS>>`` / ``[INST]`` format that was used
+        during training.
+
+        The TEMPLATE expects two variables:
+        - {{ .System }} -- filled from the Modelfile SYSTEM directive
+        - {{ .Prompt }} -- filled from the prompt string we send here
+
+        So we only need to send the user content (request + optional RAG
+        context).  The system prompt and [INST]/<<SYS>> formatting are
+        handled by the Modelfile.
+
+        For retries, we prepend the conversation history to give the model
+        context about what went wrong.
+        """
+        parts = []
+
+        # Include retry history if present
+        for turn in conversation_history:
+            role = turn["role"]
+            content = turn["content"]
+            if role == "assistant":
+                parts.append(f"[Previous attempt output]\n{content}")
+            else:
+                parts.append(content)
+
+        # Add RAG context if available
+        has_rag = rag_context and rag_context not in (
+            "(No documentation context available.)",
+            "(No relevant docs found.)",
+            "(RAG retrieval error.)",
+        )
+
+        if has_rag:
+            parts.append(
+                f"OpenNebula documentation context (reference only -- "
+                f"do NOT copy commands verbatim):\n\n{rag_context}\n\n---\n\n"
+                f"Request: {request}"
+            )
+        else:
+            parts.append(request)
+
+        return "\n\n".join(parts)
+
+    def _call_llm(self, prompt: Union[list, str]) -> str:
+        """
+        Call the LLM with either a message list or a raw prompt string.
+
+        - Base model (ChatOllama):  prompt is a list of LangChain messages.
+        - Fine-tuned (OllamaLLM):  prompt is a plain string.
+
+        Both return a string.
+        """
         llm = self._get_llm()
+
+        if isinstance(prompt, str):
+            # OllamaLLM -- /api/generate endpoint, returns string directly
+            response = llm.invoke(prompt)
+            return response if isinstance(response, str) else str(response)
+
+        # ChatOllama -- /api/chat endpoint, returns AIMessage
         try:
-            response = llm.invoke(messages)
+            response = llm.invoke(prompt)
         except Exception:
+            # Fallback: join messages into a single string
             prompt_text = "\n\n".join(
-                (m.content if hasattr(m, "content") else str(m)) for m in messages
+                (m.content if hasattr(m, "content") else str(m)) for m in prompt
             )
             response = llm.invoke(prompt_text)
 
@@ -253,10 +372,11 @@ class OneAIChain:
         Extract clean YAML from an LLM response.
 
         Aggressively strips markdown fences, prose preambles, and trailing text.
+        Works for both base and fine-tuned model outputs (both wrap in fences).
         """
         raw = raw.strip()
 
-        # Step 1: Strip markdown fences (aggressive — handles all edge cases)
+        # Step 1: Strip markdown fences (aggressive -- handles all edge cases)
         if "```" in raw:
             # Split on ``` and find the block that looks like YAML
             parts = raw.split("```")
@@ -299,15 +419,17 @@ class OneAIChain:
     @staticmethod
     def _patch_yaml(text: str, request: str) -> str:
         """
-        Auto-fix common Mistral 7B omissions before validation.
+        Auto-fix common LLM omissions before validation.
 
         Mistral consistently drops 'description' from metadata and steps.
         Rather than waste retries on this, we patch it in from context.
+        The fine-tuned model is much less likely to need patching, but
+        this is a safe no-op when the fields are already present.
         """
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
-            return text  # unparseable — let the validator report it
+            return text  # unparseable -- let the validator report it
 
         if not isinstance(data, dict):
             return text
@@ -366,6 +488,11 @@ class OneAIChain:
         t0 = time.monotonic()
         result = ChainResult(request=request)
 
+        if self.cfg.is_finetuned:
+            logger.info("Using fine-tuned model mode (OllamaLLM, no few-shot)")
+        else:
+            logger.info("Using base model mode (ChatOllama, few-shot examples)")
+
         # 1. RAG retrieval (once per request, not per retry)
         rag_context, chunks = self._retrieve_context(request)
         result.rag_chunks = chunks
@@ -374,21 +501,26 @@ class OneAIChain:
         validator = self._get_validator()
         conversation_history: list[dict] = []
 
+        # Pick the right retry prompt template
+        retry_template = (
+            FINETUNED_RETRY_PROMPT if self.cfg.is_finetuned else RETRY_PROMPT
+        )
+
         for attempt in range(1, self.cfg.max_retries + 1):
             result.attempts = attempt
             logger.info("Attempt %d / %d", attempt, self.cfg.max_retries)
 
-            # 2. Build messages
+            # 2. Build prompt (messages list for base, string for fine-tuned)
             if attempt == 1:
-                messages = self._build_messages(request, rag_context, [])
+                prompt = self._build_messages(request, rag_context, [])
             else:
-                retry_msg = RETRY_PROMPT.format(error_summary=result.error)
+                retry_msg = retry_template.format(error_summary=result.error)
                 conversation_history.append({"role": "user", "content": retry_msg})
-                messages = self._build_messages(request, rag_context, conversation_history)
+                prompt = self._build_messages(request, rag_context, conversation_history)
 
             # 3. LLM call
             try:
-                raw_output = self._call_llm(messages)
+                raw_output = self._call_llm(prompt)
                 logger.debug("LLM raw output (attempt %d):\n%s", attempt, raw_output[:500])
             except Exception as exc:
                 result.error = f"LLM call failed: {exc}"
@@ -402,7 +534,7 @@ class OneAIChain:
             if clean_output != raw_output:
                 logger.debug("Stripped prose/fences from LLM output before validation")
 
-            # Auto-fix common Mistral 7B omissions (missing description, etc.)
+            # Auto-fix common omissions (safe no-op when fields already present)
             clean_output = self._patch_yaml(clean_output, request)
 
             validation = validator.validate(clean_output)

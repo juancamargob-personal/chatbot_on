@@ -11,6 +11,11 @@ Every value can be overridden with an environment variable that has the
     export ONEAI_CORE_LLM_BACKEND=openai
     export OPENAI_API_KEY=sk-...
 
+Fine-tuned model usage::
+
+    export ONEAI_CORE_OLLAMA_MODEL=oneai-mistral:latest
+    export ONEAI_CORE_FINETUNED_MODE=true
+
 This mirrors the ``ONEAI_RAG_`` convention used in one-ai-rag/config.py.
 """
 
@@ -51,6 +56,12 @@ OLLAMA_TIMEOUT: int    = _env_int("OLLAMA_TIMEOUT", 120)
 LLM_BACKEND: str = _env("LLM_BACKEND", "ollama")
 
 # ---------------------------------------------------------------------------
+# Fine-tuned model mode
+# ---------------------------------------------------------------------------
+
+FINETUNED_MODE: bool = _env_bool("FINETUNED_MODE", False)
+
+# ---------------------------------------------------------------------------
 # OpenAI  (used when LLM_BACKEND=openai)
 # ---------------------------------------------------------------------------
 
@@ -72,6 +83,7 @@ MAX_RETRIES: int = _env_int("MAX_RETRIES", 3)
 
 RAG_TOP_K: int   = _env_int("RAG_TOP_K",   5)
 RAG_RERANK: bool = _env_bool("RAG_RERANK", True)
+RAG_ENABLED: bool = _env_bool("RAG_ENABLED", True)
 RAG_EMBEDDING_MODEL: str = _env(
     "RAG_EMBEDDING_MODEL",
     # Must match whatever model was used to build the ChromaDB collection.
@@ -137,6 +149,9 @@ class CoreConfig:
     # LLM backend
     llm_backend: str = field(default_factory=lambda: LLM_BACKEND)
 
+    # Fine-tuned mode
+    finetuned_mode: bool = field(default_factory=lambda: FINETUNED_MODE)
+
     # OpenAI
     openai_api_key: str       = field(default_factory=lambda: OPENAI_API_KEY)
     openai_model: str         = field(default_factory=lambda: OPENAI_MODEL)
@@ -150,6 +165,7 @@ class CoreConfig:
     rag_top_k: int            = field(default_factory=lambda: RAG_TOP_K)
     rag_rerank: bool          = field(default_factory=lambda: RAG_RERANK)
     rag_embedding_model: str  = field(default_factory=lambda: RAG_EMBEDDING_MODEL)
+    rag_enabled: bool = field(default_factory=lambda: RAG_ENABLED)
 
     # Paths
     output_dir: Path = field(default_factory=lambda: OUTPUT_DIR)
@@ -166,17 +182,32 @@ class CoreConfig:
     # ------------------------------------------------------------------
 
     @property
+    def is_finetuned(self) -> bool:
+        """
+        Whether to use fine-tuned prompting mode.
+
+        Enabled explicitly via ONEAI_CORE_FINETUNED_MODE=true, or
+        auto-detected when the model name starts with 'oneai-'.
+        """
+        if self.finetuned_mode:
+            return True
+        # Auto-detect from model name
+        return self.ollama_model.startswith("oneai-")
+
+    @property
     def active_model(self) -> str:
         """Human-readable label for the active LLM."""
         if self.llm_backend == "openai":
             return f"openai/{self.openai_model}"
-        return f"ollama/{self.ollama_model}"
+        suffix = " [fine-tuned]" if self.is_finetuned else ""
+        return f"ollama/{self.ollama_model}{suffix}"
 
     def __repr__(self) -> str:
         # Never log API keys or passwords
         return (
             f"CoreConfig(backend={self.llm_backend!r}, "
             f"model={self.active_model!r}, "
+            f"finetuned={self.is_finetuned}, "
             f"endpoint={self.one_endpoint!r}, "
             f"max_retries={self.max_retries}, "
             f"rag_top_k={self.rag_top_k})"
